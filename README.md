@@ -2,7 +2,7 @@
 
 A single black ring on a warm white field, controlled from the keyboard, with no visible UI. Built for a TV or monitor driven from a PC over HDMI, or opened directly in a smart-TV browser.
 
-Live: `https://adam-bon.github.io/contour-target/`
+Live: [https://adam-bon.github.io/contour-target/](https://adam-bon.github.io/contour-target/)
 
 ## What it is for
 
