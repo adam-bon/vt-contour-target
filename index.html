@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contour Target</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: #fff8f0;
+    cursor: none;
+    -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+  }
+  body.flash-dark { background: #000 !important; }
+  #stage {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: -webkit-box; display: -webkit-flex; display: flex;
+    -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+    -webkit-box-pack: center; -webkit-justify-content: center; justify-content: center;
+  }
+  #ring { display: block; overflow: visible; }
+  #ring.hidden { visibility: hidden; }
+  *:focus { outline: none; }
+  ::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body tabindex="0">
+<div id="stage">
+  <svg id="ring" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle id="circle" fill="none" stroke="#000"></circle>
+  </svg>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  var DEFAULTS = { d: 0.75, s: 0.10, blur: 0, bg: 'fff8f0', ring: 1, flash: 0, hz: 1 };
+  var BG_CYCLE = ['ffffff', 'fff8f0', 'fff0dc', 'e6e6e6'];
+  var STORAGE_KEY = 'contour-target-state-v2';
+
+  var state = {};
+  var flashTimer = null;
+  var wakeLock = null;
+
+  var body = document.body;
+  var svg = document.getElementById('ring');
+  var circle = document.getElementById('circle');
+
+  // ---------- helpers ----------
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function isNum(v) { return typeof v === 'number' && isFinite(v); }
+  function round(v, p) { var m = Math.pow(10, p); return Math.round(v * m) / m; }
+
+  function parseHash() {
+    var out = {};
+    var h = window.location.hash;
+    if (!h || h.length < 2) return out;
+    var parts = h.substring(1).split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].split('=');
+      if (kv.length !== 2) continue;
+      var k = decodeURIComponent(kv[0]);
+      var v = decodeURIComponent(kv[1]);
+      out[k] = v;
+    }
+    return out;
+  }
+
+  function sanitize(raw) {
+    var s = {};
+    var n;
+    n = parseFloat(raw.d);   s.d    = isNum(n) ? clamp(n, 0.05, 0.95) : DEFAULTS.d;
+    n = parseFloat(raw.s);   s.s    = isNum(n) ? clamp(n, 0.01, 0.5)  : DEFAULTS.s;
+    n = parseFloat(raw.blur);s.blur = isNum(n) ? clamp(n, 0, 80)      : DEFAULTS.blur;
+    n = parseFloat(raw.hz);  s.hz   = isNum(n) ? clamp(n, 0.25, 12)   : DEFAULTS.hz;
+    s.bg = (typeof raw.bg === 'string' && /^[0-9a-fA-F]{6}$/.test(raw.bg)) ? raw.bg.toLowerCase() : DEFAULTS.bg;
+    s.ring  = (raw.ring  === '0' || raw.ring  === 0 || raw.ring  === false) ? 0 : (raw.ring  === undefined ? DEFAULTS.ring  : 1);
+    s.flash = (raw.flash === '1' || raw.flash === 1 || raw.flash === true) ? 1 : (raw.flash === undefined ? DEFAULTS.flash : 0);
+    return s;
+  }
+
+  function loadStorage() {
+    try {
+      var txt = window.localStorage.getItem(STORAGE_KEY);
+      if (!txt) return {};
+      var obj = JSON.parse(txt);
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch (e) { return {}; }
+  }
+
+  function saveStorage() {
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  }
+
+  function merge(base, over) {
+    var out = {};
+    var k;
+    for (k in base) if (base.hasOwnProperty(k)) out[k] = base[k];
+    for (k in over) if (over.hasOwnProperty(k)) out[k] = over[k];
+    return out;
+  }
+
+  function toHash() {
+    return '#d=' + round(state.d, 3) +
+           '&s=' + round(state.s, 3) +
+           '&blur=' + round(state.blur, 1) +
+           '&bg=' + state.bg +
+           '&ring=' + state.ring +
+           '&flash=' + state.flash +
+           '&hz=' + round(state.hz, 2);
+  }
+
+  function writeHash() {
+    var url = window.location.pathname + window.location.search + toHash();
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', url);
+    } else {
+      window.location.hash = toHash();
+    }
+  }
+
+  // ---------- rendering ----------
+  function render() {
+    var w = window.innerWidth || document.documentElement.clientWidth;
+    var h = window.innerHeight || document.documentElement.clientHeight;
+    var m = Math.min(w, h);
+    var dia = m * state.d;
+    var sw = dia * state.s;
+    // SVG box holds the full outer extent of the stroke.
+    var box = dia + sw;
+    var half = box / 2;
+
+    svg.setAttribute('width', box);
+    svg.setAttribute('height', box);
+    svg.setAttribute('viewBox', '0 0 ' + box + ' ' + box);
+    circle.setAttribute('cx', half);
+    circle.setAttribute('cy', half);
+    circle.setAttribute('r', dia / 2);
+    circle.setAttribute('stroke-width', sw);
+
+    var blur = state.blur > 0 ? 'blur(' + state.blur + 'px)' : 'none';
+    svg.style.webkitFilter = blur;
+    svg.style.filter = blur;
+
+    if (state.ring) { svg.className.baseVal = ''; svg.removeAttribute('class'); }
+    else { svg.setAttribute('class', 'hidden'); }
+
+    body.style.background = '#' + state.bg;
+
+    applyFlash();
+    saveStorage();
+  }
+
+  function applyFlash() {
+    if (flashTimer !== null) { clearInterval(flashTimer); flashTimer = null; }
+    if (state.flash) {
+      flashTimer = setInterval(function () {
+        if (body.className.indexOf('flash-dark') >= 0) body.className = body.className.replace(/\s*flash-dark/g, '');
+        else body.className += (body.className ? ' ' : '') + 'flash-dark';
+      }, 1000 / (2 * state.hz));
+    } else {
+      body.className = body.className.replace(/\s*flash-dark/g, '');
+    }
+  }
+
+  // ---------- fullscreen ----------
+  function fsElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement ||
+           document.mozFullScreenElement || document.msFullscreenElement || null;
+  }
+  function toggleFullscreen() {
+    var el = document.documentElement;
+    if (!fsElement()) {
+      var req = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitRequestFullScreen ||
+                el.mozRequestFullScreen || el.msRequestFullscreen;
+      if (req) { try { var p = req.call(el); if (p && p['catch']) p['catch'](function () {}); } catch (e) {} }
+    } else {
+      var ex = document.exitFullscreen || document.webkitExitFullscreen || document.webkitCancelFullScreen ||
+               document.mozCancelFullScreen || document.msExitFullscreen;
+      if (ex) { try { var q = ex.call(document); if (q && q['catch']) q['catch'](function () {}); } catch (e) {} }
+    }
+  }
+
+  // ---------- wake lock ----------
+  function requestWakeLock() {
+    if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') return;
+    try {
+      var p = navigator.wakeLock.request('screen');
+      if (p && p.then) {
+        p.then(function (lock) { wakeLock = lock; }, function () {});
+      }
+    } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') requestWakeLock();
+  });
+
+  // ---------- keyboard ----------
+  function keyName(e) {
+    if (e.key !== undefined) return e.key;
+    // Legacy keyCode fallback for old TV WebKit
+    var c = e.keyCode || e.which;
+    var map = {
+      13: 'Enter', 32: ' ', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown',
+      67: 'c', 70: 'f', 66: 'b', 82: 'r', 83: 's', 189: '-', 187: '=', 219: '[', 221: ']',
+      109: '-', 61: '=', 173: '-', 107: '+', 188: ',', 190: '.'
+    };
+    return map[c] || '';
+  }
+
+  document.addEventListener('keydown', function (e) {
+    var k = keyName(e);
+    var lower = k.length === 1 ? k.toLowerCase() : k;
+    var repeat = !!e.repeat;
+    var handled = true;
+
+    switch (lower) {
+      case 'c':
+      case ' ':
+        if (!repeat) state.ring = state.ring ? 0 : 1;
+        break;
+      case 'ArrowUp':   case 'Up':    state.d = clamp(round(state.d + 0.025, 3), 0.05, 0.95); break;
+      case 'ArrowDown': case 'Down':  state.d = clamp(round(state.d - 0.025, 3), 0.05, 0.95); break;
+      case 'ArrowRight':case 'Right': state.blur = clamp(state.blur + 2, 0, 80); break;
+      case 'ArrowLeft': case 'Left':  state.blur = clamp(state.blur - 2, 0, 80); break;
+      case '[': state.s = clamp(round(state.s - 0.01, 3), 0.01, 0.5); break;
+      case ']': state.s = clamp(round(state.s + 0.01, 3), 0.01, 0.5); break;
+      case 'f':
+        if (!repeat) state.flash = state.flash ? 0 : 1;
+        break;
+      case '-': case '_': state.d = clamp(round(state.d - 0.025, 3), 0.05, 0.95); break;
+      case '=': case '+': state.d = clamp(round(state.d + 0.025, 3), 0.05, 0.95); break;
+      case ',': case '<': state.hz = clamp(round(state.hz - 0.25, 2), 0.25, 12); break;
+      case '.': case '>': state.hz = clamp(round(state.hz + 0.25, 2), 0.25, 12); break;
+      case 'b': {
+        var idx = -1;
+        for (var i = 0; i < BG_CYCLE.length; i++) if (BG_CYCLE[i] === state.bg) { idx = i; break; }
+        state.bg = BG_CYCLE[(idx + 1) % BG_CYCLE.length];
+        break;
+      }
+      case 'r':
+        state = merge(DEFAULTS, {});
+        break;
+      case 'Enter':
+        if (!repeat) toggleFullscreen();
+        break;
+      case 's':
+        writeHash();
+        break;
+      default:
+        handled = false;
+    }
+
+    if (handled) {
+      if (e.preventDefault) e.preventDefault();
+      render();
+    }
+  });
+
+  // ---------- init ----------
+  function init() {
+    var stored = loadStorage();
+    var hash = parseHash();
+    // hash > localStorage > defaults
+    state = sanitize(merge(merge(DEFAULTS, stored), hash));
+    render();
+    requestWakeLock();
+    try { body.focus(); } catch (e) {}
+  }
+
+  window.addEventListener('resize', render);
+  window.addEventListener('orientationchange', render);
+  window.addEventListener('hashchange', function () {
+    state = sanitize(merge(state, parseHash()));
+    render();
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>
